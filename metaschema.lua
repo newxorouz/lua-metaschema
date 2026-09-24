@@ -214,11 +214,18 @@ local function createMetaschemaEnvironment(metadefinition)
           table.insert(instance.children, self:createInstance(gotten_item, fmt, definition))
           
           gotten_item = q:get()
+          while type(gotten_item) == "string" do
+            gotten_item = q:get()
+          end
+          if not gotten_item then
+            break
+          end
         end
         
         if found and modelItem.name == "choice" then
           assert(subcount >= submin, "choice tried to find "..name.." with minimum cardinality "..submin.." but only found "..subcount)
           count = count + 1
+          break
         else
           count = count + subcount
         end

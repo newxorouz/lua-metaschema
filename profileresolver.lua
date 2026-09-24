@@ -1,7 +1,7 @@
 local function convertRegex(re)
-  local luaRe = re:gsub("%*%.", {
+  local luaRe = re:gsub("[%*%.]", {
       ["."]="%.",
-      ["*"]="."})
+      ["*"]=".*"})
   return luaRe
 end
 

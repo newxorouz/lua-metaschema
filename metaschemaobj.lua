@@ -26,39 +26,34 @@ function IndexResults:__concat(b)
   return toret
 end
 
+function IndexResults:asIndexResults()
+  return self
+end
+
 function IndexResults:__index(key)
   --this means that it's not already present in the IndexResults. so it's not a number
+  if IndexResults[key] ~= nil then
+    return IndexResults[key]
+  end
+  if #self == 1 then --if we only have one item, expose that item
+    return self[1][key]
+  end
+  --otherwise, we have multiple items
+  --index them each and aggregate the results
   local toret = setmetatable({}, IndexResults)
   for _, item in ipairs(self) do
     --we're preserving order
-    local gotten = item[key]
-    --gotten is either an IndexResults itself, or it is a singleton
-    if getmetatable(gotten, IndexResults) then
-      --place every item in the results into the results we are building
-      for _, entry in ipairs(gotten) do
-        table.insert(toret, entry)
-      end
-    else
-      --singleton
-      table.insert(toret,entry)
+    local gotten = item[key]:asIndexResults()
+    for _, entry in ipairs(gotten) do
+      table.insert(toret, entry)
     end
   end
-  if #toret == 1 then --if it refers to only one item, return only that one item
-    return toret[1]
-  end
-  --[[if #toret == 0 then --nothing found, return nil
-    return nil
-  end]]
   return toret
 end
 
 function MetaschemaObject:__index(key)
   if MetaschemaObject[key] ~= nil then
     return MetaschemaObject[key]
-  end
-  if key == 1 then
-    return self --keeps things consistent with IndexResults. but confusingly, means you can do instance[1][1][1][1][1] as much as you like...
-    --interestingly, metapath also starts indexing from one. so lua and metapath are alike here.
   end
   if key:sub(1, 1) == "@" then
     --it's an attribute/flag
@@ -73,9 +68,9 @@ function MetaschemaObject:__index(key)
       table.insert(toret, v)
     end
   end
-  if #toret == 1 then
+  --[[if #toret == 1 then
     return toret[1]
-  end
+  end]]
   --[[if #toret == 0 then
     return nil
   end]]
@@ -110,9 +105,9 @@ function MetaschemaObject:__newindex(key, value)
   end
 end
 
-MetaschemaObject.__concat = IndexResults.__concat --this is not great
+--MetaschemaObject.__concat = IndexResults.__concat --this is not great
 
-function MetaschemaObject:__ipairs()
+--[[function MetaschemaObject:__ipairs()
   --this is deprecated in modern Lua
   --but i'll include it for completeness nonetheless
   --should behave like IndexResults
@@ -122,15 +117,15 @@ function MetaschemaObject:__ipairs()
       end
     end, self, 1
   --this line is a little hard to read. basically, return key 1, self, if and only if the loop prompts us for the first index. otherwise? nil.
-end
+end]]
 
-function MetaschemaObject:__len()
+--[[function MetaschemaObject:__len()
   return 1 --this was likely going to be the case anyways
   --but i've included for the sake of clarity
   --this way, it is consistent with the interface of IndexResults
-end
+end]]
 
-function MetaschemaObject:__tostring()
+--[[function MetaschemaObject:__tostring()
   if self._rawdata.schema.name == "define-field" then
     --TODO: actually properly form together the string value
     return self._rawdata.children[1]
@@ -147,6 +142,11 @@ function MetaschemaObject:__tostring()
     end
     return self._rawdata.schema.attr["name"]
   end
+end]]
+
+-- in order to eventually stop using __ipairs, __len, __concat, etc.
+function MetaschemaObject:asIndexResults()
+  return setmetatable({self}, IndexResults)
 end
 
 function MetaschemaObject:anychildHas(name)
@@ -173,13 +173,7 @@ function MetaschemaObject:toXML()
   end
   str = str..">"
   if self._rawdata.schema.name=="define-field" or self._rawdata.schema.name=="field" then
-    for _, child in ipairs(self._rawdata.children) do
-      if type(child) == "table" then
-        --whoops. we should handle this before it reaches this point
-      else
-        str = str..child
-      end
-    end
+    str = str .. self:toMarkup()
     return str.."</"..name..">"
   end
   for declaration, child in language:walkByModel(self._rawdata) do
@@ -201,14 +195,7 @@ function MetaschemaObject:toJSON(declaration)
   --dispense with the second result because we already have schema
   
   if schema.name == "define-field" then
-    str = str.. '"'..name..'":"'
-    for _, v in ipairs(children) do
-      --TODO: conversion between ml tags and markdown
-      if type(v) == "string" then
-        str = str..v
-      end
-    end
-    return str..'"'
+    return '"'..name..'":"'..self:toMarkdown()..'"'
   end
   
   if not groupAs then
@@ -236,6 +223,47 @@ function MetaschemaObject:toJSON(declaration)
   
   str = str:sub(1, -2) --remove last comma
   str = str.."}"
+  return str
+end
+
+--converts the value of a field to a string of markdown
+function MetaschemaObject:toMarkdown(tag)
+  if not self._rawdata.schema.name == "define-field" then
+    return
+  end
+  tag = tag or self._rawdata
+  if #tag.children == 1 then
+    return tag.children[1]
+  end
+  local str = ""
+  for i, v in ipairs(tag.children) do
+    if type(v) == "string" then
+      str = str .. v
+    else
+      --markup tag
+      --TODO: check type of markup tag and insert  appropriate thing
+      str = str .. self:toMarkdown(v)
+    end
+  end
+  return str
+end
+
+--converts the value of a field to a string of markup
+function MetaschemaObject:toMarkup(tag)
+  if not self._rawdata.schema.name == "define-field" then
+    return
+  end
+  tag = tag or self._rawdata
+  local str = ""
+  for i, v in ipairs(tag.children) do
+    if type(v) == "string" then
+      str = str .. v
+    else
+      --markup tag
+      --TODO: check type. see toMarkdown
+      str = str .. self:toMarkup(v)
+    end
+  end
   return str
 end
 

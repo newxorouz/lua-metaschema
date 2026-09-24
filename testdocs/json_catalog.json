@@ -1,3 +1,3 @@
-"catalog":{"@uuid":"04c02d87-5c63-4dc3-a935-1cd66ff38c92","metadata":{"title":"Sample Security Catalog  and Testing","published":"2026-05-13T12:30:10.00000-00:00","last-modified":"2026-05-12T09:16:10.00000-00:00","version":"1.1.1","oscal-version":"1.2.2","remarks":"
-         
+"catalog":{"@uuid":"04c02d87-5c63-4dc3-a935-1cd66ff38c92","metadata":{"title":"Sample Security Catalog for Demonstration and Testing","published":"2026-05-13T12:30:10.00000-00:00","last-modified":"2026-05-12T09:16:10.00000-00:00","version":"1.1.1","oscal-version":"1.2.2","remarks":"
+         The following is a short excerpt from ISO/IEC 27002:2013, Information technology — Security techniques — Code of practice for information security controls. This work is provided here under copyright fair use for non-profit, educational purposes only. Copyrights for this work are held by the publisher, the International Organization for Standardization (ISO).
       "},"groups":[{"@id":"s1","title":"Organization of Information Security"},{"@id":"s2","title":"Access control"}]}
