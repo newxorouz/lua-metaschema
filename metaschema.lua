@@ -9,41 +9,84 @@ local getWrapper = dofile("metaschemaobj.lua")
 -- by interpret i mean: validate and convert between formats
 local function createMetaschemaEnvironment(metadefinition)
   local t = {}
-  t.definitions = {}
   t.imported_docs = {}
+  t.root_defs = {} --definitions of all objects with root_name
   
+  local function normalizePath(path)
+    path = path:gsub("\\", "/")
+    local steps = {}
+    for step in path:gmatch("[^/]+") do
+      if step == ".." and #steps > 0 and steps[#steps] ~= ".." then
+        table.remove(steps)
+      elseif step ~= "." then
+        table.insert(steps, step)
+      end
+    end
+    --TODO: variables like ~, maybe?
+    return table.concat(steps, "/")
+  end
+  
+  --open a file at the given filename, and record all root definitions in root_defintions
+  --also, place all local definitions in t.imported_docs
   t.readMetaschemaFile = function(self, filename)
+    filename = normalizePath(filename) --otherwise could cycle with whatever.xml importing ../dir/whatever.xml (../dir/../dir/../dir etc)
+    if self.imported_docs[filename] then --catch cycles
+      return self.imported_docs[filename]
+    end
+    
     local path_prefix = filename:match("(.*[/\\])")
     --TODO: what if it's a metaschema represented in JSON or YAML?
     local f = io.open(filename)
     assert(f~=nil, "file "..filename.." not found!")
     local tree = xml:parse(f:read("*all"))
     f:close()
-    ---xml:parse should return the root object, which in the case of metaschema, is a METASCHEMA object
+    
+    local toret = {}
+    local defs = {}
+    
+    self.imported_docs[filename] = toret
+    toret.defs = defs
+    toret.imports = {}
+    
+    --xml:parse should return the root object, which in the case of metaschema, is a METASCHEMA object
     local offset = 1
     while offset <= #tree.children do
       if tree.children[offset].name == "import" then
         local link = tree.children[offset].attr["href"]
-        if not self.imported_docs[link] then --prevent cyclical dependencies from infinitely cycling
-          self.imported_docs[link] = true
-          local s,r = pcall(self.readMetaschemaFile,self, path_prefix..link)
-          if not s then
-            error(r.."\nwhile resolving "..link)
-          end
+        local s,r = pcall(self.readMetaschemaFile,self, path_prefix..link) --cycle detection is handled within the call
+        if not s then
+          error(r.."\nwhile resolving "..link)
         end
+        table.insert(toret.imports, r)
       elseif
             tree.children[offset].name == "define-assembly" or
             tree.children[offset].name == "define-field" or
             tree.children[offset].name == "define-flag" then --global definition
         local name = tree.children[offset].attr["name"]
-        if self.definitions[name] ~= nil then
-          print("WARNING: duplicate definition with name "..name)
-        else
-          self.definitions[name] = tree.children[offset]
-        end
+        defs[name] = tree.children[offset]
       end
       offset = offset + 1
     end
+    return toret
+  end
+  
+  t.scopedDefinitionInFile = function(self, file, name, alreadyChecking)
+    alreadyChecking = alreadyChecking or {}
+    if alreadyChecking[file] then
+      return nil
+    end
+    alreadyChecking[file] = true
+    if file.defs[name] then
+      return file.defs[name]
+    else
+      for i, import in ipairs(file.imports) do
+        local gotten = self:scopedDefinitionInFile(import, name, alreadyChecking)
+        if gotten then
+          return gotten
+        end
+      end
+    end
+    return nil
   end
   
   local removeStringsInAssemblies = {
@@ -74,13 +117,15 @@ local function createMetaschemaEnvironment(metadefinition)
     ["flag-ref"]="flag"
   }
   
-  t.normalizeMetaschema = function(self, definition)
+  t.normalizeMetaschema = function(self, definition, file)
     --normalize a metaschema:
     --remove text elements (all kinds of definitions are assemblies)
     --if the definition uses json-y wrapping, unwrap them to make it xml-y
     --(though this is partially done at the level of parsing json, so we just have to change the name to match)
     --this only targets a few items we are sure will be consistent for all version of metaschema
     --to avoid conflicting with future versions
+    
+    --also, attach whichever definition a reference refers to
     
     local discriminator = nil
     if renameGroupNames[definition.name] then
@@ -93,14 +138,24 @@ local function createMetaschemaEnvironment(metadefinition)
       if type(v) ~= "string" then --avoid text
         if v.name == discriminator then
           definition.name = remapDiscriminators[v.children[1]]
-        elseif removeStringsInAssemblies[v.name] then
-          table.insert(new_children, self:normalizeMetaschema(v))
         else
-          table.insert(new_children, v) --still worth keeping, but we don't know if it's an assembly or field, so we can't normalize it
+          if v.name == "root-name" then
+            self.root_defs[v.children[1]] = definition
+          end
+          table.insert(new_children, self:normalizeMetaschema(v, file))
         end
+      elseif not removeStringsInAssemblies[definition.name] then
+        table.insert(new_children, v)
       end
     end
     definition.children = new_children
+    
+    if definition.name == "assembly" or
+        definition.name == "field" or
+        definition.name == "flag" then
+      definition.def = self:scopedDefinitionInFile(file, definition.attr["ref"])
+    end
+    
     return definition
   end
   
@@ -109,7 +164,7 @@ local function createMetaschemaEnvironment(metadefinition)
     local definition = declaration
     if declaration.name == "assembly" or declaration.name == "field" or declaration.name == "flag" then --actually a reference
       name = declaration.attr["ref"]
-      definition = self.definitions[name]
+      definition = declaration.def
       
       --references can have a use-name
       --get the use-name if one is given
@@ -344,6 +399,8 @@ local function createMetaschemaEnvironment(metadefinition)
           
           --okay! we know everything about what we are hoping for, let's see if it's right!
           local gotten_item = q:get()
+          --TODO: JSON may not be ordered, so even if the gotten_item does not match,
+          --it may exist later in the queue...
           while type(gotten_item) == "string" do
             --boo, hiss! strings in our object! we're analyzing a model so this is an assembly
             --get rid of it
@@ -417,7 +474,7 @@ local function createMetaschemaEnvironment(metadefinition)
   
   t.new = function(self, schema)
     if type(schema) == "string" then
-      schema = self.definitions[schema]
+      schema = self.root_defs[schema]
     end
     local instance = {}
     instance.schema = schema
@@ -477,7 +534,7 @@ local function createMetaschemaEnvironment(metadefinition)
   end
   
   t.createInstance = function(self, tree, fmt, schema)
-    schema = schema or self.definitions[tree.name]
+    schema = schema or self.root_defs[tree.name]
     assert(schema ~= nil)
     
     local instance = {}
@@ -542,8 +599,10 @@ local function createMetaschemaEnvironment(metadefinition)
   
   --beautify definitions by removing unneeded strings
   --also, if the definition is json, let's remove group-as
-  for k, v in pairs(t.definitions) do
-    t.definitions[k] = t:normalizeMetaschema(v) --strictly speaking, the assignment is not necessary
+  for _, doc in pairs(t.imported_docs) do
+    for _, def in pairs(doc.defs) do
+      t:normalizeMetaschema(def, doc)
+    end
   end
   t.wrapper = getWrapper(t)
   return t
