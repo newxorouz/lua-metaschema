@@ -160,6 +160,69 @@ function MetaschemaObject:anychildHas(name)
   return toret
 end
 
+function MetaschemaObject:add(thing)
+  if self._rawdata.schema.name == "define-field" then
+    assert(type(thing) == "string")
+    table.insert(self._rawdata.children, thing)
+  end
+  local model = nil
+  for _, schemaItem in ipairs(self._rawdata.schema.children) do
+    if schemaItem.name == "model" then
+      model = schemaItem
+      break
+    end
+  end
+  assert(model ~= nil, "model not found, don't know where to add to")
+  
+  local placed = false
+  for i = 1, #model.children do
+    if placed then
+      self._rawdata.offsets[i] = self._rawdata.offsets[i] + 1
+    else
+      local modelItem = model.children[i]
+      local name, _ = language:resolveNameUnderChoice(modelItem, thing._rawdata.schema)
+      if name == thing._rawdata.schema.attr.name then
+        table.insert(self._rawdata.children, self._rawdata.offsets[i], thing)
+        self._rawdata.offsets[i] = self._rawdata.offsets[i] + 1
+        placed = true
+      end
+    end
+  end
+end
+
+function MetaschemaObject:walkByModel()
+  local schema = self._rawdata.schema
+  local children = self._rawdata.children
+  local offsets = self._rawdata.offsets
+  local model = nil
+  for _, schemaItem in ipairs(schema.children) do
+    if schemaItem.name == "model" then
+      model = schemaItem
+      break
+    end
+  end
+  assert(model ~= nil, "fields have no model to be walked")
+  
+  local index = 0
+  local modelIndex = 1
+  local function iter()
+    index = index + 1
+    if index > #children then return end
+    while index >= offsets[modelIndex] do
+      modelIndex = modelIndex+1
+      if not offsets[modelIndex] then
+        print(self)
+      end
+    end
+    return model.children[modelIndex], children[index]
+    --need to decide if choices and choice groups should figure out which choice is applicable here
+    --currently leaning against since presumably the child knows its own schema from when we created it
+    --so there's no case to work through which choice was exercised again
+  end
+  
+  return iter
+end
+
 function MetaschemaObject:toXML()
   local str = "<"
   local name = self._rawdata.schema.attr["name"] or self._rawdata.schema.attr["ref"]
@@ -176,48 +239,65 @@ function MetaschemaObject:toXML()
     str = str .. self:toMarkup()
     return str.."</"..name..">"
   end
-  for declaration, child in language:walkByModel(self._rawdata) do
+  for declaration, child in self:walkByModel() do
     str = str..child:toXML()
   end
   return str.."</"..name..">"
 end
 
-function MetaschemaObject:toJSON(declaration)
+function MetaschemaObject:toJSON(declaration, tabnum)
   local schema = self._rawdata.schema
   local flags = self._rawdata.flags
   local children = self._rawdata.children
   
   declaration = declaration or schema
   
+  --if not tabnum then tabnum = 0 end
+  
+  local nlt = ""
+  local nltt = ""
+  local stabnum, ltabnum = nil
+  if tabnum then
+    nlt = "\n"
+    for i = 1, tabnum do
+      nlt = nlt.."\t"
+    end
+    nltt = nlt .. "\t"
+    stabnum = tabnum + 1
+    ltabnum = tabnum + 2
+  end
+  
   local str = ""
   
-  local name, _, groupAs = language:resolveName(declaration)
+  local name, groupAs = language:resolveNameUnderChoice(declaration, schema)
   --dispense with the second result because we already have schema
-  
-  if schema.name == "define-field" then
-    return '"'..name..'":"'..self:toMarkdown()..'"'
-  end
   
   if not groupAs then
     str = str .. '"'..name .. '":{'
   else
     str = str .. "{"
   end
+  
+  if schema.name == "define-field" then
+    --TODO: fields have flags too!
+    return str:sub(1,-2)..'"'..self:toMarkdown()..'"'
+  end
+  
   for k, v in pairs(flags) do
-    str = str..'"@'..k..'":"'..v..'",'
+    str = str..nlt..'"@'..k..'":"'..v..'",'
   end
   local addedGroupLabels = {}
-  for declaration, v in language:walkByModel(self._rawdata) do
-    name, schema, groupAs = language:resolveName(declaration)
+  for declaration, v in self:walkByModel() do
+    name, groupAs = language:resolveNameUnderChoice(declaration, v._rawdata.schema)
     if groupAs then
       if not addedGroupLabels[groupAs.attr["name"]] then
         addedGroupLabels[groupAs.attr["name"]] = true
-        str = str ..'"'.. groupAs.attr["name"]..'":['..v:toJSON(declaration).."],"
+        str = str .. nlt ..'"'.. groupAs.attr["name"]..'":['..nltt..v:toJSON(declaration, ltabnum).."],"
       else
-        str = str:sub(1, -3) ..",".. v:toJSON(declaration).."],"
+        str = str:sub(1, -3) ..",".. nltt .. v:toJSON(declaration, ltabnum).."],"
       end
     else
-      str = str .. v:toJSON(declaration) .. ","
+      str = str .. nlt .. v:toJSON(declaration,stabnum) .. ","
     end
   end
   

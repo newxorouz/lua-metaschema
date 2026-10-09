@@ -41,7 +41,8 @@ local function resolve(oscal, profile, fromDir)
   --this only does flatten
   for k, v in pairs(gottenControls) do
     --toret.control = v
-    table.insert(toret._rawdata.children, v)
+    --table.insert(toret._rawdata.children, v)
+    toret:add(v)
   end
   
   return toret

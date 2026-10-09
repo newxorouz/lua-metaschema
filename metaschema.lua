@@ -192,6 +192,22 @@ local function createMetaschemaEnvironment(metadefinition)
     return name, definition, groupAs
   end
   
+  t.resolveNameUnderChoice = function(self, declaration, schema)
+    if declaration.name == "choice" or declaration.name == "choice-group" then
+      for k, v in pairs(declaration.children) do
+        local name, _, groupAs = self:resolveName(v)
+        if schema.attr.name == name then
+          return name, groupAs
+        end
+      end
+      --huh?
+      return schema.attr["name"], nil
+    else
+      local n, _, g = self:resolveName(declaration)
+      return n, g
+    end
+  end
+  
   t.interpretModelItem = function(self, q, fmt, instance, modelItem)
     --based off of the schema modelItem, add proper item(s) to instance
     --q: queue of children in the tree
@@ -277,17 +293,17 @@ local function createMetaschemaEnvironment(metadefinition)
           end
         end
         
-        if found and modelItem.name == "choice" then
-          assert(subcount >= submin, "choice tried to find "..name.." with minimum cardinality "..submin.." but only found "..subcount)
-          count = count + 1
-          break
-        else
-          count = count + subcount
-        end
-        
         --if we ended on a non-nil, put it back for the next guy
         if gotten_item then
           q:unget(gotten_item)
+        end
+        
+        count = count + subcount
+        if found and modelItem.name == "choice" then
+          assert(subcount >= submin, "choice tried to find "..name.." with minimum cardinality "..submin.." but only found "..subcount)
+          --TODO: decide on a better paradigm for handling choices
+          --(i.e. should count be the number of options of the choice taken (always one?))
+          break
         end
       end
       if not found then
@@ -504,12 +520,14 @@ local function createMetaschemaEnvironment(metadefinition)
         end
       end
       if schemaItem.name == "model" then
+        instance.offsets = {}
+        local offset = 1
         for _, modelItem in ipairs(schemaItem.children) do
           local min
           if modelItem.name == "choice" then
             for _, choiceItem in ipairs(modelItem.children) do
               modelItem = choiceItem
-              min = tonumber(modelItem.attr["min-occurs"]) or 0
+              min = math.min(min, tonumber(modelItem.attr["min-occurs"]) or 0)
               if min == 0 then
                 break
               end
@@ -520,12 +538,14 @@ local function createMetaschemaEnvironment(metadefinition)
           local name, def = self:resolveName(modelItem)
           if min ~= 0 then
             --TODO: i'm assuming min is therefore one, but it could be more
-            if modelItem.name == "choice-group" then
+            if modelItem.name == "choice-group" or modelItem.name == "choice" then
               error("TODO: choice group with minimum > 0")
             else
               table.insert(instance.children, self:new(def))
+              offset = offset + 1
             end
           end
+          instance.offsets[_] = offset
         end
       end
     end
@@ -564,8 +584,13 @@ local function createMetaschemaEnvironment(metadefinition)
           q:add(v)
         end
         
+        instance.offsets = {}
+        local offset = 1
         for _, modelItem in pairs(schemaItem.children) do
-          self:interpretModelItem(q, fmt, instance, modelItem)
+          offset = offset + self:interpretModelItem(q, fmt, instance, modelItem)
+          instance.offsets[_] = offset
+          --doing the end, because if we did the start, offsets[1] would always be 1
+          --and that's just silly to keep track of
         end
       end
     end
